@@ -1,25 +1,133 @@
-import { useState } from "react";
-import { Menu, Plus, MessageSquare, Settings, User, Send, Bot, X } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Menu, Plus, MessageSquare, Settings, User, Send, Bot, X, AlertCircle, Key, Shield, Clock } from "lucide-react";
 
 function App() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false); // Default closed on mobile
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const messagesEndRef = useRef(null);
 
-  // OpenRouter Configuration
-  const [apiKey, setApiKey] = useState(
-    "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"
-  );
-  const [selectedModel, setSelectedModel] = useState(
-    "anthropic/claude-3-haiku"
-  );
+  // OpenRouter Configuration with default API key
+  const DEFAULT_API_KEY = "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";
+  const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
+  const [selectedModel, setSelectedModel] = useState("anthropic/claude-3-haiku");
   const [customInstructions, setCustomInstructions] = useState(
     "You are a helpful AI assistant working on a Zapier blog project. Provide clear, concise, and actionable advice about automation, workflows, and productivity."
   );
-  const [lastRequestTime, setLastRequestTime] = useState(0);
-  const [requestCount, setRequestCount] = useState(0);
-  const [rateLimitInfo, setRateLimitInfo] = useState(null);
+
+  // Enhanced rate limiting with exponential backoff
+  const [rateLimitState, setRateLimitState] = useState({
+    requestTimes: [],
+    backoffDelay: 1000,
+    maxBackoff: 32000,
+    requestCount: 0,
+    remaining: null,
+    resetTime: null
+  });
+
+  // API key validation algorithm
+  const validateApiKey = useCallback((key) => {
+    if (!key || typeof key !== 'string') return { valid: false, type: 'missing' };
+
+    const trimmedKey = key.trim();
+    if (trimmedKey.length === 0) return { valid: false, type: 'empty' };
+
+    // OpenRouter API key format validation
+    if (trimmedKey.startsWith('sk-or-v1-')) {
+      if (trimmedKey.length < 50) return { valid: false, type: 'too_short' };
+      return { valid: true, type: 'openrouter' };
+    }
+
+    // Check for other common API key formats
+    if (trimmedKey.startsWith('sk-')) return { valid: false, type: 'wrong_format' };
+    if (trimmedKey.startsWith('Bearer ')) return { valid: false, type: 'bearer_format' };
+
+    return { valid: false, type: 'invalid_format' };
+  }, []);
+
+  // Rate limiting algorithm with sliding window
+  const checkRateLimit = useCallback(() => {
+    const now = Date.now();
+    const windowSize = 60000; // 1 minute window
+    const maxRequests = 20; // Max 20 requests per minute
+
+    // Clean old requests from sliding window
+    const recentRequests = rateLimitState.requestTimes.filter(
+      time => now - time < windowSize
+    );
+
+    // Check if we're hitting rate limits
+    if (recentRequests.length >= maxRequests) {
+      const oldestRequest = Math.min(...recentRequests);
+      const waitTime = windowSize - (now - oldestRequest);
+      return { allowed: false, waitTime };
+    }
+
+    // Exponential backoff for consecutive requests
+    if (recentRequests.length > 0) {
+      const lastRequest = Math.max(...recentRequests);
+      const timeSinceLastRequest = now - lastRequest;
+      const minDelay = Math.min(rateLimitState.backoffDelay, rateLimitState.maxBackoff);
+
+      if (timeSinceLastRequest < minDelay) {
+        return { allowed: false, waitTime: minDelay - timeSinceLastRequest };
+      }
+    }
+
+    return { allowed: true, waitTime: 0 };
+  }, [rateLimitState]);
+
+  // Enhanced error handling algorithm
+  const handleApiError = useCallback((response, error) => {
+    let errorMessage = "An unexpected error occurred";
+    let errorType = "unknown";
+
+    if (response) {
+      const status = response.status;
+      errorType = `http_${status}`;
+
+      switch (status) {
+        case 400:
+          errorMessage = "Bad request. Please check your message format.";
+          break;
+        case 401:
+          errorMessage = "Invalid API key. Please verify your OpenRouter API key.";
+          errorType = "auth_error";
+          break;
+        case 402:
+          errorMessage = "Insufficient credits. Please check your OpenRouter account balance.";
+          errorType = "payment_error";
+          break;
+        case 403:
+          errorMessage = "Access forbidden. Check your API key permissions.";
+          break;
+        case 429:
+          errorMessage = "Rate limit exceeded. Please wait before sending another message.";
+          errorType = "rate_limit";
+          break;
+        case 500:
+          errorMessage = "Server error. Please try again in a few moments.";
+          break;
+        case 502:
+        case 503:
+        case 504:
+          errorMessage = "Service temporarily unavailable. Please try again later.";
+          break;
+        default:
+          errorMessage = `API error (${status}): ${response.statusText}`;
+      }
+    } else if (error) {
+      if (error.name === 'NetworkError' || error.message.includes('fetch')) {
+        errorMessage = "Network error. Please check your internet connection.";
+        errorType = "network_error";
+      } else {
+        errorMessage = error.message;
+      }
+    }
+
+    return { message: errorMessage, type: errorType };
+  }, []);
 
   const availableModels = [
     { id: "anthropic/claude-3-haiku", name: "Claude 3 Haiku" },
@@ -30,16 +138,96 @@ function App() {
     { id: "google/gemini-pro", name: "Gemini Pro" },
   ];
 
-  const handleSend = async () => {
-    if (input.trim() === "" || !apiKey) return;
+  // Auto-scroll algorithm with smooth behavior
+  useEffect(() => {
+    const scrollToBottom = () => {
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({
+          behavior: "smooth",
+          block: "end",
+          inline: "nearest"
+        });
+      }
+    };
 
-    // Rate limiting check - minimum 2 seconds between requests
-    const now = Date.now();
-    const timeSinceLastRequest = now - lastRequestTime;
-    if (timeSinceLastRequest < 2000) {
-      const waitTime = 2000 - timeSinceLastRequest;
+    // Delay scroll to ensure DOM is updated
+    const timeoutId = setTimeout(scrollToBottom, 100);
+    return () => clearTimeout(timeoutId);
+  }, [messages]);
+
+  // Initialize with default API key
+  useEffect(() => {
+    const validation = validateApiKey(DEFAULT_API_KEY);
+    if (validation.valid) {
+      const welcomeMessage = {
+        text: "✅ Default API key loaded successfully! You can start chatting right away.",
+        type: "bot",
+        timestamp: new Date(),
+      };
+      setMessages([welcomeMessage]);
+    }
+  }, [validateApiKey]);
+
+  // Enhanced API key change handler
+  const handleApiKeyChange = useCallback((newApiKey) => {
+    setApiKey(newApiKey);
+
+    const validation = validateApiKey(newApiKey);
+    let statusMessage = "";
+
+    if (validation.valid) {
+      statusMessage = "✅ API key format is valid";
+    } else {
+      switch (validation.type) {
+        case 'missing':
+        case 'empty':
+          statusMessage = "⚠️ Please enter an API key";
+          break;
+        case 'too_short':
+          statusMessage = "⚠️ API key appears to be too short";
+          break;
+        case 'wrong_format':
+          statusMessage = "⚠️ This appears to be a different API service key";
+          break;
+        case 'bearer_format':
+          statusMessage = "⚠️ Remove 'Bearer ' prefix from your API key";
+          break;
+        default:
+          statusMessage = "⚠️ OpenRouter API keys should start with 'sk-or-v1-'";
+      }
+    }
+
+    // Update UI with validation status
+    const statusMsg = {
+      text: statusMessage,
+      type: validation.valid ? "bot" : "error",
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, statusMsg]);
+  }, [validateApiKey]);
+
+  const handleSend = async () => {
+    if (input.trim() === "") return;
+
+    // Validate API key before sending
+    const validation = validateApiKey(apiKey);
+    if (!validation.valid) {
       const errorMessage = {
-        text: `Please wait ${Math.ceil(waitTime / 1000)} seconds before sending another message.`,
+        text: "Please enter a valid OpenRouter API key in the sidebar to start chatting.",
+        type: "error",
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      setSidebarOpen(true);
+      return;
+    }
+
+    // Check rate limiting
+    const rateCheck = checkRateLimit();
+    if (!rateCheck.allowed) {
+      const waitSeconds = Math.ceil(rateCheck.waitTime / 1000);
+      const errorMessage = {
+        text: `Rate limit active. Please wait ${waitSeconds} seconds before sending another message.`,
         type: "error",
         timestamp: new Date(),
       };
@@ -50,8 +238,15 @@ function App() {
     const userMessage = { text: input, type: "user", timestamp: new Date() };
     setMessages((prev) => [...prev, userMessage]);
     setIsLoading(true);
-    setLastRequestTime(now);
-    setRequestCount(prev => prev + 1);
+
+    // Update rate limit state
+    const now = Date.now();
+    setRateLimitState(prev => ({
+      ...prev,
+      requestTimes: [...prev.requestTimes, now],
+      requestCount: prev.requestCount + 1,
+      backoffDelay: Math.min(prev.backoffDelay * 1.5, prev.maxBackoff)
+    }));
 
     const currentInput = input;
     setInput("");
@@ -62,16 +257,17 @@ function App() {
         ? { role: "system", content: customInstructions }
         : {
           role: "system",
-          content:
-            "You are a helpful assistant working on a Zapier blog project.",
+          content: "You are a helpful assistant working on a Zapier blog project.",
         };
 
       const conversationMessages = [
         systemMessage,
-        ...messages.map((msg) => ({
-          role: msg.type === "user" ? "user" : "assistant",
-          content: msg.text,
-        })),
+        ...messages
+          .filter(msg => msg.type === "user" || msg.type === "bot")
+          .map((msg) => ({
+            role: msg.type === "user" ? "user" : "assistant",
+            content: msg.text,
+          })),
         { role: "user", content: currentInput },
       ];
 
@@ -88,34 +284,26 @@ function App() {
             model: selectedModel,
             messages: conversationMessages,
             temperature: 0.7,
-            max_tokens: 1500, // Reduced to help with rate limits
+            max_tokens: 1500,
           }),
         }
       );
 
-      // Extract rate limit info from headers
+      // Extract and update rate limit info
       const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
       const rateLimitReset = response.headers.get('x-ratelimit-reset');
 
       if (rateLimitRemaining) {
-        setRateLimitInfo({
-          remaining: rateLimitRemaining,
-          reset: rateLimitReset ? new Date(parseInt(rateLimitReset) * 1000) : null
-        });
+        setRateLimitState(prev => ({
+          ...prev,
+          remaining: parseInt(rateLimitRemaining),
+          resetTime: rateLimitReset ? new Date(parseInt(rateLimitReset) * 1000) : null
+        }));
       }
 
       if (!response.ok) {
-        if (response.status === 429) {
-          const resetTime = rateLimitReset ? new Date(parseInt(rateLimitReset) * 1000) : null;
-          const waitMinutes = resetTime ? Math.ceil((resetTime - new Date()) / 60000) : 5;
-          throw new Error(`Rate limit exceeded. Please wait ${waitMinutes} minutes before trying again.`);
-        } else if (response.status === 401) {
-          throw new Error('Invalid API key. Please check your OpenRouter API key.');
-        } else if (response.status === 402) {
-          throw new Error('Insufficient credits. Please check your OpenRouter account balance.');
-        } else {
-          throw new Error(`API error (${response.status}): ${response.statusText}`);
-        }
+        const errorInfo = handleApiError(response, null);
+        throw new Error(errorInfo.message);
       }
 
       const data = await response.json();
@@ -128,13 +316,20 @@ function App() {
           model: selectedModel,
         };
         setMessages((prev) => [...prev, botResponse]);
+
+        // Reset backoff delay on successful request
+        setRateLimitState(prev => ({
+          ...prev,
+          backoffDelay: 1000
+        }));
       } else {
         throw new Error("Invalid response format from API");
       }
     } catch (error) {
       console.error("Error calling OpenRouter API:", error);
+      const errorInfo = handleApiError(null, error);
       const errorMessage = {
-        text: `Error: ${error.message}`,
+        text: errorInfo.message,
         type: "error",
         timestamp: new Date(),
       };
@@ -154,12 +349,29 @@ function App() {
   const handleNewChat = () => {
     setMessages([]);
     setInput("");
-    setRequestCount(0);
-    setRateLimitInfo(null);
-    setSidebarOpen(false); // Close sidebar after new chat on mobile
+    setRateLimitState(prev => ({
+      ...prev,
+      requestCount: 0,
+      requestTimes: [],
+      backoffDelay: 1000
+    }));
+    setSidebarOpen(false);
   };
 
   const closeSidebar = () => {
+    setSidebarOpen(false);
+  };
+
+  const testApiKey = () => {
+    const validation = validateApiKey(apiKey);
+    const testMessage = {
+      text: validation.valid
+        ? "✅ API key format is correct! Try sending a message to test the connection."
+        : `❌ ${validation.type === 'missing' ? 'Please enter an API key first' : 'Invalid API key format'}`,
+      type: validation.valid ? "bot" : "error",
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, testMessage]);
     setSidebarOpen(false);
   };
 
@@ -198,37 +410,39 @@ function App() {
         <div className="flex-1 overflow-y-auto p-4">
           <div className="space-y-6">
             <div>
-              <h3 className="text-sm font-medium text-gray-400 mb-3">API Configuration</h3>
+              <h3 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">
+                <Key size={14} />
+                API Configuration
+              </h3>
               <input
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder="Enter your OpenRouter API key"
-                className="w-full p-3 bg-gray-800 border border-gray-600 rounded text-sm text-white mb-3"
+                className="w-full p-3 bg-gray-800 border border-gray-600 rounded text-sm text-white mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
+              <div className="text-xs text-gray-400 mb-3">
+                Get your API key from{' '}
+                <a
+                  href="https://openrouter.ai/keys"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:text-blue-300"
+                >
+                  openrouter.ai/keys
+                </a>
+              </div>
               <button
-                onClick={() => {
-                  // Test API key
-                  if (apiKey.startsWith('sk-or-v1-')) {
-                    const testMessage = {
-                      text: "API key format appears correct ✓",
-                      type: "bot",
-                      timestamp: new Date(),
-                    };
-                    setMessages(prev => [...prev, testMessage]);
-                  } else {
-                    const errorMessage = {
-                      text: "⚠️ OpenRouter API keys should start with 'sk-or-v1-'",
-                      type: "error",
-                      timestamp: new Date(),
-                    };
-                    setMessages(prev => [...prev, errorMessage]);
-                  }
-                  setSidebarOpen(false);
-                }}
-                className="w-full p-3 bg-blue-600 hover:bg-blue-700 rounded text-sm text-white"
+                onClick={testApiKey}
+                className="w-full p-3 bg-blue-600 hover:bg-blue-700 rounded text-sm text-white transition-colors mb-3"
               >
                 Test API Key Format
+              </button>
+              <button
+                onClick={() => setApiKey(DEFAULT_API_KEY)}
+                className="w-full p-3 bg-green-600 hover:bg-green-700 rounded text-sm text-white transition-colors"
+              >
+                Use Default API Key
               </button>
             </div>
 
@@ -237,7 +451,7 @@ function App() {
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
-                className="w-full p-3 bg-gray-800 border border-gray-600 rounded text-sm text-white"
+                className="w-full p-3 bg-gray-800 border border-gray-600 rounded text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 {availableModels.map((model) => (
                   <option key={model.id} value={model.id}>
@@ -248,15 +462,23 @@ function App() {
             </div>
 
             <div>
-              <h3 className="text-sm font-medium text-gray-400 mb-3">Recent Chats</h3>
-              {messages.length > 0 && (
-                <div className="flex items-center gap-2 p-3 bg-gray-800 rounded-lg">
-                  <MessageSquare size={16} />
-                  <span className="text-sm truncate">
-                    {messages.find(m => m.type === 'user')?.text?.slice(0, 30) || 'New conversation'}...
-                  </span>
+              <h3 className="text-sm font-medium text-gray-400 mb-3">Rate Limiting</h3>
+              <div className="bg-gray-800 rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">Requests</span>
+                  <span className="text-xs text-white">{rateLimitState.requestCount}</span>
                 </div>
-              )}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">Window</span>
+                  <span className="text-xs text-white">{rateLimitState.requestTimes.length}/20</span>
+                </div>
+                {rateLimitState.remaining && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400">API Remaining</span>
+                    <span className="text-xs text-white">{rateLimitState.remaining}</span>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div>
@@ -264,7 +486,7 @@ function App() {
               <textarea
                 value={customInstructions}
                 onChange={(e) => setCustomInstructions(e.target.value)}
-                className="w-full p-3 bg-gray-800 border border-gray-600 rounded text-sm text-white resize-none"
+                className="w-full p-3 bg-gray-800 border border-gray-600 rounded text-sm text-white resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
                 rows={4}
                 placeholder="Enter custom instructions..."
               />
@@ -284,15 +506,8 @@ function App() {
             </div>
             <div className="text-xs text-gray-500 pt-2">
               <div className="mb-1">Model: {availableModels.find(m => m.id === selectedModel)?.name}</div>
-              <div>Requests: {requestCount}</div>
-              {rateLimitInfo && (
-                <div className="mt-2 space-y-1">
-                  <div>Remaining: {rateLimitInfo.remaining}</div>
-                  {rateLimitInfo.reset && (
-                    <div>Reset: {rateLimitInfo.reset.toLocaleTimeString()}</div>
-                  )}
-                </div>
-              )}
+              <div className="mb-1">API Status: {validateApiKey(apiKey).valid ? '✅ Valid' : '❌ Invalid'}</div>
+              <div className="mb-1">Backoff: {rateLimitState.backoffDelay}ms</div>
             </div>
           </div>
         </div>
@@ -308,17 +523,34 @@ function App() {
           >
             <Menu size={20} />
           </button>
-          <h1 className="text-xl font-semibold text-gray-800 truncate">Chat AI</h1>
+          <h1 className="text-xl font-semibold text-gray-800 truncate">Enhanced Chat AI</h1>
+          <div className="ml-auto flex items-center gap-2">
+            {validateApiKey(apiKey).valid ? (
+              <div className="flex items-center gap-2 text-green-600">
+                <Shield size={16} />
+                <span className="text-sm">API Ready</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-orange-600">
+                <AlertCircle size={16} />
+                <span className="text-sm">API Key Required</span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Messages Container */}
         <div className="flex-1 overflow-y-auto">
           {messages.length === 0 ? (
             <div className="h-full flex items-center justify-center p-4">
-              <div className="text-center">
+              <div className="text-center max-w-md">
                 <Bot size={48} className="mx-auto mb-4 text-gray-400" />
-                <h2 className="text-xl lg:text-2xl font-semibold text-gray-800 mb-2">How can I help you today?</h2>
-                <p className="text-gray-600">Ask me anything and I'll do my best to help</p>
+                <h2 className="text-xl lg:text-2xl font-semibold text-gray-800 mb-2">
+                  Enhanced Chat AI Ready
+                </h2>
+                <p className="text-gray-600 mb-4">
+                  Featuring advanced rate limiting, API key validation, and error handling
+                </p>
               </div>
             </div>
           ) : (
@@ -327,8 +559,8 @@ function App() {
                 <div key={index} className={`mb-6 lg:mb-8 ${message.type === 'user' ? 'ml-auto' : ''}`}>
                   <div className="flex items-start gap-2 lg:gap-3">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${message.type === 'user'
-                      ? 'bg-blue-500 text-white order-2'
-                      : message.type === 'error'
+                        ? 'bg-blue-500 text-white order-2'
+                        : message.type === 'error'
                         ? 'bg-red-500 text-white'
                         : 'bg-gray-700 text-white'
                       }`}>
@@ -336,12 +568,14 @@ function App() {
                     </div>
                     <div className={`flex-1 min-w-0 ${message.type === 'user' ? 'order-1' : ''}`}>
                       <div className={`p-3 lg:p-4 rounded-lg ${message.type === 'user'
-                        ? 'bg-blue-500 text-white ml-auto max-w-xs lg:max-w-md'
-                        : message.type === 'error'
+                          ? 'bg-blue-500 text-white ml-auto max-w-xs lg:max-w-md'
+                          : message.type === 'error'
                           ? 'bg-red-50 border border-red-200 text-red-800'
                           : 'bg-white border border-gray-200'
                         }`}>
-                        <p className="whitespace-pre-wrap text-sm lg:text-base break-words">{message.text}</p>
+                        <p className="whitespace-pre-wrap text-sm lg:text-base break-words">
+                          {message.text}
+                        </p>
                         {message.model && message.type === 'bot' && (
                           <div className="text-xs text-gray-500 mt-2">
                             {availableModels.find(m => m.id === message.model)?.name}
@@ -374,12 +608,13 @@ function App() {
                   </div>
                 </div>
               )}
+                <div ref={messagesEndRef} />
             </div>
           )}
         </div>
 
         {/* Input Area */}
-        <div className="bg-white border-t border-gray-200 p-4 safe-area-bottom">
+        <div className="bg-white border-t border-gray-200 p-4">
           <div className="max-w-3xl mx-auto">
             <div className="flex items-end gap-2 lg:gap-3">
               <div className="flex-1 relative">
@@ -387,7 +622,7 @@ function App() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Message Chat AI..."
+                  placeholder={validateApiKey(apiKey).valid ? "Message Enhanced Chat AI..." : "Enter API key in sidebar first..."}
                   className="w-full p-3 pr-12 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none text-sm lg:text-base"
                   rows={1}
                   disabled={isLoading}
@@ -395,7 +630,7 @@ function App() {
                 />
                 <button
                   onClick={handleSend}
-                  disabled={isLoading || !input.trim()}
+                  disabled={isLoading || !input.trim() || !validateApiKey(apiKey).valid}
                   className="absolute right-2 bottom-2 p-2 text-gray-500 hover:text-blue-500 disabled:text-gray-300 disabled:cursor-not-allowed"
                 >
                   <Send size={20} />
@@ -404,9 +639,15 @@ function App() {
             </div>
             <div className="text-xs text-gray-500 mt-2 text-center">
               <div>Press Enter to send, Shift+Enter for new line</div>
-              {rateLimitInfo && rateLimitInfo.remaining && parseInt(rateLimitInfo.remaining) < 5 && (
+              {rateLimitState.remaining && rateLimitState.remaining < 5 && (
                 <div className="text-orange-500 mt-1">
-                  ⚠️ Rate limit warning: {rateLimitInfo.remaining} requests remaining
+                  ⚠️ API Rate limit warning: {rateLimitState.remaining} requests remaining
+                </div>
+              )}
+              {rateLimitState.requestTimes.length > 15 && (
+                <div className="text-yellow-500 mt-1">
+                  <Clock size={12} className="inline mr-1" />
+                  Local rate limit: {rateLimitState.requestTimes.length}/20 requests in window
                 </div>
               )}
             </div>
