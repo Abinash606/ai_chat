@@ -8,9 +8,9 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // Get API key from environment variables or fallback
-  const API_KEY = process.env.REACT_APP_OPENROUTER_API_KEY;
-  const [selectedModel, setSelectedModel] = useState("deepseek/deepseek-r1-0528:free");
+  // Google Gemini API key
+  const API_KEY = "AIzaSyAoIbebMPglU6XdOtLOrWbRU1HcyR8JyyQ";
+  const [selectedModel, setSelectedModel] = useState("gemini-2.0-flash");
   const [customInstructions, setCustomInstructions] = useState(
     "You are a helpful AI assistant. Provide clear, concise, and actionable responses to user queries."
   );
@@ -30,21 +30,19 @@ function App() {
     requestCount: 0
   });
 
-  // Free models only
+  // Google Gemini models
   const availableModels = [
-    { id: "deepseek/deepseek-r1-0528:free", name: "DeepSeek R1 (Free)" },
-    { id: "meta-llama/llama-3.2-1b-instruct:free", name: "Llama 3.2 1B (Free)" },
-    { id: "meta-llama/llama-3.2-3b-instruct:free", name: "Llama 3.2 3B (Free)" },
-    { id: "microsoft/phi-3-mini-128k-instruct:free", name: "Phi-3 Mini (Free)" },
-    { id: "huggingface/zephyr-7b-beta:free", name: "Zephyr 7B (Free)" },
-    { id: "google/gemma-7b-it:free", name: "Gemma 7B (Free)" }
+    { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
+    { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash" },
+    { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro" },
+    { id: "gemini-1.0-pro", name: "Gemini 1.0 Pro" }
   ];
 
   // Rate limiting check
   const checkRateLimit = useCallback(() => {
     const now = Date.now();
     const windowSize = 60000; // 1 minute
-    const maxRequests = 15; // Reduced for free tier
+    const maxRequests = 60; // Gemini has higher rate limits
 
     const recentRequests = rateLimitState.requestTimes.filter(
       time => now - time < windowSize
@@ -107,6 +105,9 @@ function App() {
         case 401:
           errorMessage = `Authentication failed: ${errorMessage}. Please check your API key.`;
           break;
+        case 403:
+          errorMessage = `Access denied: ${errorMessage}`;
+          break;
         case 429:
           errorMessage = `Rate limit exceeded: ${errorMessage}`;
           break;
@@ -154,19 +155,18 @@ function App() {
   useEffect(() => {
     if (!API_KEY || API_KEY === '' || API_KEY === 'undefined') {
       const errorMessage = {
-        text: "❌ No API key found. Please set REACT_APP_OPENROUTER_API_KEY environment variable.",
+        text: "❌ No API key found. Please set your Google Gemini API key.",
         type: "error",
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, errorMessage]);
-    } else {
     }
   }, [API_KEY]);
 
   // Initialize with welcome message
   useEffect(() => {
     const welcomeMessage = {
-      text: "Welcome to Free AI Chat! Select a model and start chatting.",
+      text: "Welcome to Google Gemini AI Chat! Select a model and start chatting.",
       type: "bot",
       timestamp: new Date(),
     };
@@ -176,19 +176,17 @@ function App() {
   // Test API connection
   const testApiConnection = async () => {
     try {
-      const response = await fetch("https://openrouter.ai/api/v1/models", {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`, {
         method: "GET",
         headers: {
-          Authorization: `Bearer ${API_KEY}`,
           "Content-Type": "application/json",
         },
       });
 
-      const data = await response.json();
-
       if (response.ok) {
+        const data = await response.json();
         const testMessage = {
-          text: "✅ API connection successful! Available models loaded.",
+          text: `✅ API connection successful! Found ${data.models?.length || 0} available models.`,
           type: "bot",
           timestamp: new Date(),
         };
@@ -246,56 +244,55 @@ function App() {
     setInput("");
 
     try {
-      const systemMessage = {
-        role: "system",
-        content: customInstructions
-      };
+      // Build conversation history for context
+      const conversationHistory = messages
+        .filter(msg => msg.type === "user" || msg.type === "bot")
+        .map(msg => `${msg.type === "user" ? "User" : "Assistant"}: ${msg.text}`)
+        .join("\n");
 
-      const conversationMessages = [
-        systemMessage,
-        ...messages
-          .filter(msg => msg.type === "user" || msg.type === "bot")
-          .map((msg) => ({
-            role: msg.type === "user" ? "user" : "assistant",
-            content: msg.text,
-          })),
-        { role: "user", content: currentInput },
-      ];
+      const systemPrompt = customInstructions;
+      const fullPrompt = conversationHistory
+        ? `${systemPrompt}\n\nConversation history:\n${conversationHistory}\n\nUser: ${currentInput}`
+        : `${systemPrompt}\n\nUser: ${currentInput}`;
 
       const requestBody = {
-        model: selectedModel,
-        messages: conversationMessages,
-        temperature: 0.7,
-        max_tokens: 1500,
+        contents: [
+          {
+            parts: [
+              {
+                text: fullPrompt
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 2048,
+          topP: 0.8,
+          topK: 40
+        }
       };
-
 
       setDebugInfo(prev => ({
         ...prev,
         lastRequest: {
-          url: "https://openrouter.ai/api/v1/chat/completions",
+          url: `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent`,
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${API_KEY.substring(0, 20)}...`,
             "Content-Type": "application/json",
-            "HTTP-Referer": window.location.origin,
-            "X-Title": "Free AI Chat",
+            "X-goog-api-key": `${API_KEY.substring(0, 20)}...`,
           },
           body: requestBody
         }
       }));
 
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${API_KEY}`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${API_KEY}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": window.location.origin,
-          "X-Title": "Free AI Chat",
         },
         body: JSON.stringify(requestBody),
       });
-
 
       if (!response.ok) {
         const errorMessage = await handleApiError(response, null);
@@ -309,9 +306,9 @@ function App() {
         lastResponse: data
       }));
 
-      if (data.choices && data.choices[0] && data.choices[0].message) {
+      if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
         const botResponse = {
-          text: data.choices[0].message.content,
+          text: data.candidates[0].content.parts[0].text,
           type: "bot",
           timestamp: new Date(),
           model: selectedModel,
@@ -407,7 +404,7 @@ function App() {
         <div className="flex-1 overflow-y-auto p-4">
           <div className="space-y-6">
             <div>
-              <h3 className="text-sm font-medium text-gray-400 mb-3">Free AI Models</h3>
+              <h3 className="text-sm font-medium text-gray-400 mb-3">Google Gemini Models</h3>
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
@@ -431,10 +428,8 @@ function App() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-400">API Key Source</span>
-                  <span className="text-xs text-white">
-                    {process.env.REACT_APP_OPENROUTER_API_KEY ? 'Environment' : 'Hardcoded'}
-                  </span>
+                  <span className="text-xs text-gray-400">API Provider</span>
+                  <span className="text-xs text-white">Google Gemini</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-gray-400">Key Preview</span>
@@ -464,7 +459,7 @@ function App() {
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-gray-400">Current Window</span>
-                  <span className="text-xs text-white">{rateLimitState.requestTimes.length}/15</span>
+                  <span className="text-xs text-white">{rateLimitState.requestTimes.length}/60</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-gray-400">Backoff Delay</span>
@@ -498,7 +493,7 @@ function App() {
             </div>
             <div className="text-xs text-gray-500 pt-2">
               <div className="mb-1">Model: {availableModels.find(m => m.id === selectedModel)?.name}</div>
-              <div className="mb-1">Status: ✅ Free Tier Active</div>
+              <div className="mb-1">Status: ✅ Google Gemini Active</div>
             </div>
           </div>
         </div>
@@ -514,11 +509,11 @@ function App() {
           >
             <Menu size={20} />
           </button>
-          <h1 className="text-xl font-semibold text-gray-800 truncate">AI Chat</h1>
+          <h1 className="text-xl font-semibold text-gray-800 truncate">Google Gemini AI Chat</h1>
           <div className="ml-auto flex items-center gap-2">
-            <div className="flex items-center gap-2 text-green-600">
+            <div className="flex items-center gap-2 text-blue-600">
               <Bot size={16} />
-              <span className="text-sm">Free Tier</span>
+              <span className="text-sm">Gemini AI</span>
             </div>
           </div>
         </div>
@@ -530,19 +525,19 @@ function App() {
               <div key={index} className={`mb-6 lg:mb-8 ${message.type === 'user' ? 'ml-auto' : ''}`}>
                 <div className="flex items-start gap-2 lg:gap-3">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${message.type === 'user'
-                      ? 'bg-blue-500 text-white order-2'
-                      : message.type === 'error'
-                        ? 'bg-red-500 text-white'
-                        : 'bg-purple-600 text-white'
+                    ? 'bg-blue-500 text-white order-2'
+                    : message.type === 'error'
+                      ? 'bg-red-500 text-white'
+                      : 'bg-gradient-to-br from-blue-500 to-purple-600 text-white'
                     }`}>
                     {message.type === 'user' ? <User size={16} /> : <Bot size={16} />}
                   </div>
                   <div className={`flex-1 min-w-0 ${message.type === 'user' ? 'order-1' : ''}`}>
                     <div className={`p-3 lg:p-4 rounded-lg ${message.type === 'user'
-                        ? 'bg-blue-500 text-white ml-auto max-w-xs lg:max-w-md'
-                        : message.type === 'error'
-                          ? 'bg-red-50 border border-red-200 text-red-800'
-                          : 'bg-white border border-gray-200'
+                      ? 'bg-blue-500 text-white ml-auto max-w-xs lg:max-w-md'
+                      : message.type === 'error'
+                        ? 'bg-red-50 border border-red-200 text-red-800'
+                        : 'bg-white border border-gray-200'
                       }`}>
                       <p className="whitespace-pre-wrap text-sm lg:text-base break-words">
                         {message.text}
@@ -561,7 +556,7 @@ function App() {
             {isLoading && (
               <div className="mb-6 lg:mb-8">
                 <div className="flex items-start gap-2 lg:gap-3">
-                  <div className="w-8 h-8 rounded-full bg-purple-600 text-white flex items-center justify-center flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-white flex items-center justify-center flex-shrink-0">
                     <Bot size={16} />
                   </div>
                   <div className="flex-1 min-w-0">
@@ -569,9 +564,9 @@ function App() {
                       <div className="flex items-center gap-2">
                         <div className="animate-pulse text-sm lg:text-base">Thinking...</div>
                         <div className="flex gap-1">
-                          <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"></div>
-                          <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                          <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                          <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"></div>
+                          <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                          <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                         </div>
                       </div>
                     </div>
@@ -593,7 +588,7 @@ function App() {
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Ask me anything..."
-                  className="w-full p-3 pr-12 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none text-sm lg:text-base"
+                  className="w-full p-3 pr-12 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none text-sm lg:text-base"
                   rows={1}
                   disabled={isLoading}
                   style={{ minHeight: '48px' }}
@@ -601,7 +596,7 @@ function App() {
                 <button
                   onClick={handleSend}
                   disabled={isLoading || !input.trim()}
-                  className="absolute right-2 bottom-2 p-2 text-gray-500 hover:text-purple-500 disabled:text-gray-300 disabled:cursor-not-allowed"
+                  className="absolute right-2 bottom-2 p-2 text-gray-500 hover:text-blue-500 disabled:text-gray-300 disabled:cursor-not-allowed"
                 >
                   <Send size={20} />
                 </button>
@@ -609,10 +604,10 @@ function App() {
             </div>
             <div className="text-xs text-gray-500 mt-2 text-center">
               <div>Press Enter to send, Shift+Enter for new line</div>
-              {rateLimitState.requestTimes.length > 10 && (
+              {rateLimitState.requestTimes.length > 45 && (
                 <div className="text-yellow-500 mt-1">
                   <Clock size={12} className="inline mr-1" />
-                  Rate limit: {rateLimitState.requestTimes.length}/15 requests in current window
+                  Rate limit: {rateLimitState.requestTimes.length}/60 requests in current window
                 </div>
               )}
             </div>
