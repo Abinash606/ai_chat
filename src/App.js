@@ -9,7 +9,7 @@ function App() {
   const messagesEndRef = useRef(null);
 
   // Get API key from environment variables or fallback
-  const API_KEY = process.env.REACT_APP_OPENROUTER_API_KEY || "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";
+  const API_KEY = process.env.REACT_APP_OPENROUTER_API_KEY;
   const [selectedModel, setSelectedModel] = useState("deepseek/deepseek-r1-0528:free");
   const [customInstructions, setCustomInstructions] = useState(
     "You are a helpful AI assistant. Provide clear, concise, and actionable responses to user queries."
@@ -84,8 +84,6 @@ function App() {
           body: responseText
         };
 
-        console.log("API Response Debug:", debugData);
-
         // Try to parse JSON error message
         try {
           const errorData = JSON.parse(responseText);
@@ -129,7 +127,6 @@ function App() {
         message: error.message,
         stack: error.stack
       };
-      console.log("Network Error Debug:", debugData);
 
       if (error.name === 'NetworkError' || error.message.includes('fetch')) {
         errorMessage = "Network error. Please check your connection.";
@@ -163,7 +160,6 @@ function App() {
       };
       setMessages(prev => [...prev, errorMessage]);
     } else {
-      console.log("API Key loaded:", API_KEY.substring(0, 15) + "...");
     }
   }, [API_KEY]);
 
@@ -189,7 +185,6 @@ function App() {
       });
 
       const data = await response.json();
-      console.log("API Test Response:", data);
 
       if (response.ok) {
         const testMessage = {
@@ -274,10 +269,6 @@ function App() {
         max_tokens: 1500,
       };
 
-      // Debug logging
-      console.log("Request Body:", requestBody);
-      console.log("API Key (first 20 chars):", API_KEY.substring(0, 20) + "...");
-      console.log("Selected Model:", selectedModel);
 
       setDebugInfo(prev => ({
         ...prev,
@@ -305,8 +296,6 @@ function App() {
         body: JSON.stringify(requestBody),
       });
 
-      console.log("Response Status:", response.status);
-      console.log("Response Headers:", Object.fromEntries(response.headers.entries()));
 
       if (!response.ok) {
         const errorMessage = await handleApiError(response, null);
@@ -314,7 +303,6 @@ function App() {
       }
 
       const data = await response.json();
-      console.log("Response Data:", data);
 
       setDebugInfo(prev => ({
         ...prev,
@@ -526,7 +514,7 @@ function App() {
           >
             <Menu size={20} />
           </button>
-          <h1 className="text-xl font-semibold text-gray-800 truncate">Free AI Chat</h1>
+          <h1 className="text-xl font-semibold text-gray-800 truncate">AI Chat</h1>
           <div className="ml-auto flex items-center gap-2">
             <div className="flex items-center gap-2 text-green-600">
               <Bot size={16} />
