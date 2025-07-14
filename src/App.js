@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Menu, Plus, MessageSquare, Settings, User, Send, Bot, X, AlertCircle, Key, Shield, Clock } from "lucide-react";
+import { Menu, Plus, MessageSquare, Settings, User, Send, Bot, X, Clock, AlertCircle } from "lucide-react";
 
 function App() {
   const [input, setInput] = useState("");
@@ -8,63 +8,54 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // OpenRouter Configuration with your provided API key and model
-  const DEFAULT_API_KEY = "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";
-  const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
+  // Get API key from environment variables or fallback
+  const API_KEY = process.env.REACT_APP_OPENROUTER_API_KEY || "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";
   const [selectedModel, setSelectedModel] = useState("deepseek/deepseek-r1-0528:free");
   const [customInstructions, setCustomInstructions] = useState(
     "You are a helpful AI assistant. Provide clear, concise, and actionable responses to user queries."
   );
 
-  // Enhanced rate limiting with exponential backoff
+  // Debug state
+  const [debugInfo, setDebugInfo] = useState({
+    lastRequest: null,
+    lastResponse: null,
+    lastError: null
+  });
+
+  // Rate limiting state
   const [rateLimitState, setRateLimitState] = useState({
     requestTimes: [],
     backoffDelay: 1000,
-    maxBackoff: 32000,
-    requestCount: 0,
-    remaining: null,
-    resetTime: null
+    maxBackoff: 16000,
+    requestCount: 0
   });
 
-  // API key validation algorithm
-  const validateApiKey = useCallback((key) => {
-    if (!key || typeof key !== 'string') return { valid: false, type: 'missing' };
+  // Free models only
+  const availableModels = [
+    { id: "deepseek/deepseek-r1-0528:free", name: "DeepSeek R1 (Free)" },
+    { id: "meta-llama/llama-3.2-1b-instruct:free", name: "Llama 3.2 1B (Free)" },
+    { id: "meta-llama/llama-3.2-3b-instruct:free", name: "Llama 3.2 3B (Free)" },
+    { id: "microsoft/phi-3-mini-128k-instruct:free", name: "Phi-3 Mini (Free)" },
+    { id: "huggingface/zephyr-7b-beta:free", name: "Zephyr 7B (Free)" },
+    { id: "google/gemma-7b-it:free", name: "Gemma 7B (Free)" }
+  ];
 
-    const trimmedKey = key.trim();
-    if (trimmedKey.length === 0) return { valid: false, type: 'empty' };
-
-    // OpenRouter API key format validation
-    if (trimmedKey.startsWith('sk-or-v1-')) {
-      if (trimmedKey.length < 50) return { valid: false, type: 'too_short' };
-      return { valid: true, type: 'openrouter' };
-    }
-
-    // Check for other common API key formats
-    if (trimmedKey.startsWith('sk-')) return { valid: false, type: 'wrong_format' };
-    if (trimmedKey.startsWith('Bearer ')) return { valid: false, type: 'bearer_format' };
-
-    return { valid: false, type: 'invalid_format' };
-  }, []);
-
-  // Rate limiting algorithm with sliding window
+  // Rate limiting check
   const checkRateLimit = useCallback(() => {
     const now = Date.now();
-    const windowSize = 60000; // 1 minute window
-    const maxRequests = 20; // Max 20 requests per minute
+    const windowSize = 60000; // 1 minute
+    const maxRequests = 15; // Reduced for free tier
 
-    // Clean old requests from sliding window
     const recentRequests = rateLimitState.requestTimes.filter(
       time => now - time < windowSize
     );
 
-    // Check if we're hitting rate limits
     if (recentRequests.length >= maxRequests) {
       const oldestRequest = Math.min(...recentRequests);
       const waitTime = windowSize - (now - oldestRequest);
       return { allowed: false, waitTime };
     }
 
-    // Exponential backoff for consecutive requests
     if (recentRequests.length > 0) {
       const lastRequest = Math.max(...recentRequests);
       const timeSinceLastRequest = now - lastRequest;
@@ -78,157 +69,164 @@ function App() {
     return { allowed: true, waitTime: 0 };
   }, [rateLimitState]);
 
-  // Enhanced error handling algorithm
-  const handleApiError = useCallback((response, error) => {
+  // Enhanced error handling with debugging
+  const handleApiError = useCallback(async (response, error) => {
     let errorMessage = "An unexpected error occurred";
-    let errorType = "unknown";
+    let debugData = null;
 
     if (response) {
-      const status = response.status;
-      errorType = `http_${status}`;
+      try {
+        const responseText = await response.text();
+        debugData = {
+          status: response.status,
+          statusText: response.statusText,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: responseText
+        };
 
-      switch (status) {
+        console.log("API Response Debug:", debugData);
+
+        // Try to parse JSON error message
+        try {
+          const errorData = JSON.parse(responseText);
+          if (errorData.error && errorData.error.message) {
+            errorMessage = errorData.error.message;
+          }
+        } catch (e) {
+          // If not JSON, use response text
+          if (responseText) {
+            errorMessage = responseText;
+          }
+        }
+      } catch (e) {
+        console.error("Error reading response:", e);
+      }
+
+      switch (response.status) {
         case 400:
-          errorMessage = "Bad request. Please check your message format.";
+          errorMessage = `Bad request: ${errorMessage}`;
           break;
         case 401:
-          errorMessage = "Invalid API key. Please verify your OpenRouter API key.";
-          errorType = "auth_error";
-          break;
-        case 402:
-          errorMessage = "Insufficient credits. Please check your OpenRouter account balance.";
-          errorType = "payment_error";
-          break;
-        case 403:
-          errorMessage = "Access forbidden. Check your API key permissions.";
+          errorMessage = `Authentication failed: ${errorMessage}. Please check your API key.`;
           break;
         case 429:
-          errorMessage = "Rate limit exceeded. Please wait before sending another message.";
-          errorType = "rate_limit";
+          errorMessage = `Rate limit exceeded: ${errorMessage}`;
           break;
         case 500:
-          errorMessage = "Server error. Please try again in a few moments.";
+          errorMessage = `Server error: ${errorMessage}`;
           break;
         case 502:
         case 503:
         case 504:
-          errorMessage = "Service temporarily unavailable. Please try again later.";
+          errorMessage = `Service unavailable: ${errorMessage}`;
           break;
         default:
-          errorMessage = `API error (${status}): ${response.statusText}`;
+          errorMessage = `API error (${response.status}): ${errorMessage}`;
       }
     } else if (error) {
+      debugData = {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      };
+      console.log("Network Error Debug:", debugData);
+
       if (error.name === 'NetworkError' || error.message.includes('fetch')) {
-        errorMessage = "Network error. Please check your internet connection.";
-        errorType = "network_error";
+        errorMessage = "Network error. Please check your connection.";
       } else {
         errorMessage = error.message;
       }
     }
 
-    return { message: errorMessage, type: errorType };
+    setDebugInfo(prev => ({
+      ...prev,
+      lastError: debugData
+    }));
+
+    return errorMessage;
   }, []);
 
-  const availableModels = [
-    { id: "deepseek/deepseek-r1-0528:free", name: "DeepSeek R1 (Free)" },
-    { id: "anthropic/claude-3-haiku", name: "Claude 3 Haiku" },
-    { id: "anthropic/claude-3-sonnet", name: "Claude 3 Sonnet" },
-    { id: "openai/gpt-4", name: "GPT-4" },
-    { id: "openai/gpt-3.5-turbo", name: "GPT-3.5 Turbo" },
-    { id: "meta-llama/llama-3-70b-instruct", name: "Llama 3 70B" },
-    { id: "google/gemini-pro", name: "Gemini Pro" },
-  ];
-
-  // Auto-scroll algorithm with smooth behavior
+  // Auto-scroll to bottom
   useEffect(() => {
-    const scrollToBottom = () => {
-      if (messagesEndRef.current) {
-        messagesEndRef.current.scrollIntoView({
-          behavior: "smooth",
-          block: "end",
-          inline: "nearest"
-        });
-      }
-    };
-
-    // Delay scroll to ensure DOM is updated
-    const timeoutId = setTimeout(scrollToBottom, 100);
-    return () => clearTimeout(timeoutId);
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
 
-  // Initialize with default API key
+  // Validate API key on component mount
   useEffect(() => {
-    const validation = validateApiKey(DEFAULT_API_KEY);
-    if (validation.valid) {
-      const welcomeMessage = {
-        text: "✅ DeepSeek R1 model loaded successfully! You can start chatting right away.",
-        type: "bot",
-        timestamp: new Date(),
-      };
-      setMessages([welcomeMessage]);
-    }
-  }, [validateApiKey]);
-
-  // Enhanced API key change handler
-  const handleApiKeyChange = useCallback((newApiKey) => {
-    setApiKey(newApiKey);
-
-    const validation = validateApiKey(newApiKey);
-    let statusMessage = "";
-
-    if (validation.valid) {
-      statusMessage = "✅ API key format is valid";
-    } else {
-      switch (validation.type) {
-        case 'missing':
-        case 'empty':
-          statusMessage = "⚠️ Please enter an API key";
-          break;
-        case 'too_short':
-          statusMessage = "⚠️ API key appears to be too short";
-          break;
-        case 'wrong_format':
-          statusMessage = "⚠️ This appears to be a different API service key";
-          break;
-        case 'bearer_format':
-          statusMessage = "⚠️ Remove 'Bearer ' prefix from your API key";
-          break;
-        default:
-          statusMessage = "⚠️ OpenRouter API keys should start with 'sk-or-v1-'";
-      }
-    }
-
-    // Update UI with validation status
-    const statusMsg = {
-      text: statusMessage,
-      type: validation.valid ? "bot" : "error",
-      timestamp: new Date(),
-    };
-    setMessages(prev => [...prev, statusMsg]);
-  }, [validateApiKey]);
-
-  const handleSend = async () => {
-    if (input.trim() === "") return;
-
-    // Validate API key before sending
-    const validation = validateApiKey(apiKey);
-    if (!validation.valid) {
+    if (!API_KEY || API_KEY === '' || API_KEY === 'undefined') {
       const errorMessage = {
-        text: "Please enter a valid OpenRouter API key in the sidebar to start chatting.",
+        text: "❌ No API key found. Please set REACT_APP_OPENROUTER_API_KEY environment variable.",
         type: "error",
         timestamp: new Date(),
       };
-      setMessages((prev) => [...prev, errorMessage]);
-      setSidebarOpen(true);
-      return;
+      setMessages(prev => [...prev, errorMessage]);
+    } else {
+      console.log("API Key loaded:", API_KEY.substring(0, 15) + "...");
     }
+  }, [API_KEY]);
+
+  // Initialize with welcome message
+  useEffect(() => {
+    const welcomeMessage = {
+      text: "Welcome to Free AI Chat! Select a model and start chatting.",
+      type: "bot",
+      timestamp: new Date(),
+    };
+    setMessages([welcomeMessage]);
+  }, []);
+
+  // Test API connection
+  const testApiConnection = async () => {
+    try {
+      const response = await fetch("https://openrouter.ai/api/v1/models", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const data = await response.json();
+      console.log("API Test Response:", data);
+
+      if (response.ok) {
+        const testMessage = {
+          text: "✅ API connection successful! Available models loaded.",
+          type: "bot",
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, testMessage]);
+      } else {
+        const errorMessage = await handleApiError(response, null);
+        const testMessage = {
+          text: `❌ API connection failed: ${errorMessage}`,
+          type: "error",
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, testMessage]);
+      }
+    } catch (error) {
+      const errorMessage = await handleApiError(null, error);
+      const testMessage = {
+        text: `❌ API connection failed: ${errorMessage}`,
+        type: "error",
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, testMessage]);
+    }
+  };
+
+  const handleSend = async () => {
+    if (input.trim() === "") return;
 
     // Check rate limiting
     const rateCheck = checkRateLimit();
     if (!rateCheck.allowed) {
       const waitSeconds = Math.ceil(rateCheck.waitTime / 1000);
       const errorMessage = {
-        text: `Rate limit active. Please wait ${waitSeconds} seconds before sending another message.`,
+        text: `Please wait ${waitSeconds} seconds before sending another message.`,
         type: "error",
         timestamp: new Date(),
       };
@@ -246,20 +244,17 @@ function App() {
       ...prev,
       requestTimes: [...prev.requestTimes, now],
       requestCount: prev.requestCount + 1,
-      backoffDelay: Math.min(prev.backoffDelay * 1.5, prev.maxBackoff)
+      backoffDelay: Math.min(prev.backoffDelay * 1.2, prev.maxBackoff)
     }));
 
     const currentInput = input;
     setInput("");
 
     try {
-      // Prepare messages for OpenRouter API
-      const systemMessage = customInstructions
-        ? { role: "system", content: customInstructions }
-        : {
-          role: "system",
-          content: "You are a helpful assistant.",
-        };
+      const systemMessage = {
+        role: "system",
+        content: customInstructions
+      };
 
       const conversationMessages = [
         systemMessage,
@@ -272,43 +267,59 @@ function App() {
         { role: "user", content: currentInput },
       ];
 
-      const response = await fetch(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
+      const requestBody = {
+        model: selectedModel,
+        messages: conversationMessages,
+        temperature: 0.7,
+        max_tokens: 1500,
+      };
+
+      // Debug logging
+      console.log("Request Body:", requestBody);
+      console.log("API Key (first 20 chars):", API_KEY.substring(0, 20) + "...");
+      console.log("Selected Model:", selectedModel);
+
+      setDebugInfo(prev => ({
+        ...prev,
+        lastRequest: {
+          url: "https://openrouter.ai/api/v1/chat/completions",
           method: "POST",
           headers: {
-            Authorization: `Bearer ${apiKey}`,
+            "Authorization": `Bearer ${API_KEY.substring(0, 20)}...`,
             "Content-Type": "application/json",
             "HTTP-Referer": window.location.origin,
-            "X-Title": "DeepSeek R1 Chat",
+            "X-Title": "Free AI Chat",
           },
-          body: JSON.stringify({
-            model: selectedModel,
-            messages: conversationMessages,
-            temperature: 0.7,
-            max_tokens: 2000,
-          }),
+          body: requestBody
         }
-      );
+      }));
 
-      // Extract and update rate limit info
-      const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
-      const rateLimitReset = response.headers.get('x-ratelimit-reset');
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": window.location.origin,
+          "X-Title": "Free AI Chat",
+        },
+        body: JSON.stringify(requestBody),
+      });
 
-      if (rateLimitRemaining) {
-        setRateLimitState(prev => ({
-          ...prev,
-          remaining: parseInt(rateLimitRemaining),
-          resetTime: rateLimitReset ? new Date(parseInt(rateLimitReset) * 1000) : null
-        }));
-      }
+      console.log("Response Status:", response.status);
+      console.log("Response Headers:", Object.fromEntries(response.headers.entries()));
 
       if (!response.ok) {
-        const errorInfo = handleApiError(response, null);
-        throw new Error(errorInfo.message);
+        const errorMessage = await handleApiError(response, null);
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
+      console.log("Response Data:", data);
+
+      setDebugInfo(prev => ({
+        ...prev,
+        lastResponse: data
+      }));
 
       if (data.choices && data.choices[0] && data.choices[0].message) {
         const botResponse = {
@@ -319,7 +330,7 @@ function App() {
         };
         setMessages((prev) => [...prev, botResponse]);
 
-        // Reset backoff delay on successful request
+        // Reset backoff on success
         setRateLimitState(prev => ({
           ...prev,
           backoffDelay: 1000
@@ -328,14 +339,14 @@ function App() {
         throw new Error("Invalid response format from API");
       }
     } catch (error) {
-      console.error("Error calling OpenRouter API:", error);
-      const errorInfo = handleApiError(null, error);
-      const errorMessage = {
-        text: errorInfo.message,
+      console.error("Error:", error);
+      const errorMessage = await handleApiError(null, error);
+      const errorMsg = {
+        text: errorMessage,
         type: "error",
         timestamp: new Date(),
       };
-      setMessages((prev) => [...prev, errorMessage]);
+      setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setIsLoading(false);
     }
@@ -349,7 +360,11 @@ function App() {
   };
 
   const handleNewChat = () => {
-    setMessages([]);
+    setMessages([{
+      text: "New chat started! How can I help you today?",
+      type: "bot",
+      timestamp: new Date(),
+    }]);
     setInput("");
     setRateLimitState(prev => ({
       ...prev,
@@ -360,30 +375,13 @@ function App() {
     setSidebarOpen(false);
   };
 
-  const closeSidebar = () => {
-    setSidebarOpen(false);
-  };
-
-  const testApiKey = () => {
-    const validation = validateApiKey(apiKey);
-    const testMessage = {
-      text: validation.valid
-        ? "✅ API key format is correct! Try sending a message to test the connection."
-        : `❌ ${validation.type === 'missing' ? 'Please enter an API key first' : 'Invalid API key format'}`,
-      type: validation.valid ? "bot" : "error",
-      timestamp: new Date(),
-    };
-    setMessages(prev => [...prev, testMessage]);
-    setSidebarOpen(false);
-  };
-
   return (
     <div className="flex h-screen bg-gray-50 relative">
       {/* Mobile Overlay */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
-          onClick={closeSidebar}
+          onClick={() => setSidebarOpen(false)}
         />
       )}
 
@@ -394,62 +392,34 @@ function App() {
           <div className="flex items-center justify-between mb-4 lg:mb-0">
             <h2 className="text-lg font-semibold lg:hidden">Chat Settings</h2>
             <button
-              onClick={closeSidebar}
+              onClick={() => setSidebarOpen(false)}
               className="p-2 hover:bg-gray-800 rounded-lg lg:hidden"
             >
               <X size={20} />
             </button>
           </div>
-          <button
-            onClick={handleNewChat}
-            className="flex items-center gap-2 w-full p-3 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
-          >
-            <Plus size={16} />
-            <span>New Chat</span>
-          </button>
+          <div className="space-y-2">
+            <button
+              onClick={handleNewChat}
+              className="flex items-center gap-2 w-full p-3 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              <Plus size={16} />
+              <span>New Chat</span>
+            </button>
+            <button
+              onClick={testApiConnection}
+              className="flex items-center gap-2 w-full p-3 bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+            >
+              <AlertCircle size={16} />
+              <span>Test API</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4">
           <div className="space-y-6">
             <div>
-              <h3 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">
-                <Key size={14} />
-                API Configuration
-              </h3>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Enter your OpenRouter API key"
-                className="w-full p-3 bg-gray-800 border border-gray-600 rounded text-sm text-white mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <div className="text-xs text-gray-400 mb-3">
-                Get your API key from{' '}
-                <a
-                  href="https://openrouter.ai/keys"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-400 hover:text-blue-300"
-                >
-                  openrouter.ai/keys
-                </a>
-              </div>
-              <button
-                onClick={testApiKey}
-                className="w-full p-3 bg-blue-600 hover:bg-blue-700 rounded text-sm text-white transition-colors mb-3"
-              >
-                Test API Key Format
-              </button>
-              <button
-                onClick={() => setApiKey(DEFAULT_API_KEY)}
-                className="w-full p-3 bg-green-600 hover:bg-green-700 rounded text-sm text-white transition-colors"
-              >
-                Use Default API Key
-              </button>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-400 mb-3">Model Settings</h3>
+              <h3 className="text-sm font-medium text-gray-400 mb-3">Free AI Models</h3>
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
@@ -464,22 +434,54 @@ function App() {
             </div>
 
             <div>
+              <h3 className="text-sm font-medium text-gray-400 mb-3">API Debug Info</h3>
+              <div className="bg-gray-800 rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">API Key Status</span>
+                  <span className={`text-xs ${API_KEY && API_KEY !== '' && API_KEY !== 'undefined' ? 'text-green-400' : 'text-red-400'}`}>
+                    {API_KEY && API_KEY !== '' && API_KEY !== 'undefined' ? '✅ Loaded' : '❌ Missing'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">API Key Source</span>
+                  <span className="text-xs text-white">
+                    {process.env.REACT_APP_OPENROUTER_API_KEY ? 'Environment' : 'Hardcoded'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">Key Preview</span>
+                  <span className="text-xs text-green-400">
+                    {API_KEY ? API_KEY.substring(0, 15) + "..." : "Not set"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">Model</span>
+                  <span className="text-xs text-white">{selectedModel}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">Last Error</span>
+                  <span className="text-xs text-red-400">
+                    {debugInfo.lastError ? "Check Console" : "None"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div>
               <h3 className="text-sm font-medium text-gray-400 mb-3">Rate Limiting</h3>
               <div className="bg-gray-800 rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-400">Requests</span>
+                  <span className="text-xs text-gray-400">Total Requests</span>
                   <span className="text-xs text-white">{rateLimitState.requestCount}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-400">Window</span>
-                  <span className="text-xs text-white">{rateLimitState.requestTimes.length}/20</span>
+                  <span className="text-xs text-gray-400">Current Window</span>
+                  <span className="text-xs text-white">{rateLimitState.requestTimes.length}/15</span>
                 </div>
-                {rateLimitState.remaining && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-400">API Remaining</span>
-                    <span className="text-xs text-white">{rateLimitState.remaining}</span>
-                  </div>
-                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">Backoff Delay</span>
+                  <span className="text-xs text-white">{rateLimitState.backoffDelay}ms</span>
+                </div>
               </div>
             </div>
 
@@ -490,7 +492,7 @@ function App() {
                 onChange={(e) => setCustomInstructions(e.target.value)}
                 className="w-full p-3 bg-gray-800 border border-gray-600 rounded text-sm text-white resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
                 rows={4}
-                placeholder="Enter custom instructions..."
+                placeholder="Enter custom instructions for the AI..."
               />
             </div>
           </div>
@@ -508,8 +510,7 @@ function App() {
             </div>
             <div className="text-xs text-gray-500 pt-2">
               <div className="mb-1">Model: {availableModels.find(m => m.id === selectedModel)?.name}</div>
-              <div className="mb-1">API Status: {validateApiKey(apiKey).valid ? '✅ Valid' : '❌ Invalid'}</div>
-              <div className="mb-1">Backoff: {rateLimitState.backoffDelay}ms</div>
+              <div className="mb-1">Status: ✅ Free Tier Active</div>
             </div>
           </div>
         </div>
@@ -525,94 +526,73 @@ function App() {
           >
             <Menu size={20} />
           </button>
-          <h1 className="text-xl font-semibold text-gray-800 truncate">Chat AI</h1>
+          <h1 className="text-xl font-semibold text-gray-800 truncate">Free AI Chat</h1>
           <div className="ml-auto flex items-center gap-2">
-            {validateApiKey(apiKey).valid ? (
-              <div className="flex items-center gap-2 text-green-600">
-                <Shield size={16} />
-                <span className="text-sm">API Ready</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-orange-600">
-                <AlertCircle size={16} />
-                <span className="text-sm">API Key Required</span>
-              </div>
-            )}
+            <div className="flex items-center gap-2 text-green-600">
+              <Bot size={16} />
+              <span className="text-sm">Free Tier</span>
+            </div>
           </div>
         </div>
 
         {/* Messages Container */}
         <div className="flex-1 overflow-y-auto">
-          {messages.length === 0 ? (
-            <div className="h-full flex items-center justify-center p-4">
-              <div className="text-center max-w-md">
-                <Bot size={48} className="mx-auto mb-4 text-gray-400" />
-                <h2 className="text-xl lg:text-2xl font-semibold text-gray-800 mb-2">
-                  DeepSeek R1 Chat Ready
-                </h2>
-                <p className="text-gray-600 mb-4">
-                  Powered by DeepSeek R1 model with advanced reasoning capabilities
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="max-w-3xl mx-auto py-4 lg:py-8 px-4">
-              {messages.map((message, index) => (
-                <div key={index} className={`mb-6 lg:mb-8 ${message.type === 'user' ? 'ml-auto' : ''}`}>
-                  <div className="flex items-start gap-2 lg:gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${message.type === 'user'
+          <div className="max-w-3xl mx-auto py-4 lg:py-8 px-4">
+            {messages.map((message, index) => (
+              <div key={index} className={`mb-6 lg:mb-8 ${message.type === 'user' ? 'ml-auto' : ''}`}>
+                <div className="flex items-start gap-2 lg:gap-3">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${message.type === 'user'
                       ? 'bg-blue-500 text-white order-2'
                       : message.type === 'error'
                         ? 'bg-red-500 text-white'
                         : 'bg-purple-600 text-white'
-                      }`}>
-                      {message.type === 'user' ? <User size={16} /> : <Bot size={16} />}
-                    </div>
-                    <div className={`flex-1 min-w-0 ${message.type === 'user' ? 'order-1' : ''}`}>
-                      <div className={`p-3 lg:p-4 rounded-lg ${message.type === 'user'
+                    }`}>
+                    {message.type === 'user' ? <User size={16} /> : <Bot size={16} />}
+                  </div>
+                  <div className={`flex-1 min-w-0 ${message.type === 'user' ? 'order-1' : ''}`}>
+                    <div className={`p-3 lg:p-4 rounded-lg ${message.type === 'user'
                         ? 'bg-blue-500 text-white ml-auto max-w-xs lg:max-w-md'
                         : message.type === 'error'
                           ? 'bg-red-50 border border-red-200 text-red-800'
                           : 'bg-white border border-gray-200'
-                        }`}>
-                        <p className="whitespace-pre-wrap text-sm lg:text-base break-words">
-                          {message.text}
-                        </p>
-                        {message.model && message.type === 'bot' && (
-                          <div className="text-xs text-gray-500 mt-2">
-                            {availableModels.find(m => m.id === message.model)?.name}
-                          </div>
-                        )}
-                      </div>
+                      }`}>
+                      <p className="whitespace-pre-wrap text-sm lg:text-base break-words">
+                        {message.text}
+                      </p>
+                      {message.model && message.type === 'bot' && (
+                        <div className="text-xs text-gray-500 mt-2">
+                          {availableModels.find(m => m.id === message.model)?.name}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
-              ))}
+              </div>
+            ))}
 
-              {isLoading && (
-                <div className="mb-6 lg:mb-8">
-                  <div className="flex items-start gap-2 lg:gap-3">
-                    <div className="w-8 h-8 rounded-full bg-purple-600 text-white flex items-center justify-center flex-shrink-0">
-                      <Bot size={16} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="p-3 lg:p-4 bg-white border border-gray-200 rounded-lg">
-                        <div className="flex items-center gap-2">
-                          <div className="animate-pulse text-sm lg:text-base">Thinking...</div>
-                          <div className="flex gap-1">
-                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"></div>
-                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                          </div>
+            {isLoading && (
+              <div className="mb-6 lg:mb-8">
+                <div className="flex items-start gap-2 lg:gap-3">
+                  <div className="w-8 h-8 rounded-full bg-purple-600 text-white flex items-center justify-center flex-shrink-0">
+                    <Bot size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="p-3 lg:p-4 bg-white border border-gray-200 rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <div className="animate-pulse text-sm lg:text-base">Thinking...</div>
+                        <div className="flex gap-1">
+                          <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"></div>
+                          <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                          <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-          )}
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
         </div>
 
         {/* Input Area */}
@@ -624,7 +604,7 @@ function App() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={validateApiKey(apiKey).valid ? "Ask DeepSeek R1 anything..." : "Enter API key in sidebar first..."}
+                  placeholder="Ask me anything..."
                   className="w-full p-3 pr-12 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none text-sm lg:text-base"
                   rows={1}
                   disabled={isLoading}
@@ -632,7 +612,7 @@ function App() {
                 />
                 <button
                   onClick={handleSend}
-                  disabled={isLoading || !input.trim() || !validateApiKey(apiKey).valid}
+                  disabled={isLoading || !input.trim()}
                   className="absolute right-2 bottom-2 p-2 text-gray-500 hover:text-purple-500 disabled:text-gray-300 disabled:cursor-not-allowed"
                 >
                   <Send size={20} />
@@ -641,15 +621,10 @@ function App() {
             </div>
             <div className="text-xs text-gray-500 mt-2 text-center">
               <div>Press Enter to send, Shift+Enter for new line</div>
-              {rateLimitState.remaining && rateLimitState.remaining < 5 && (
-                <div className="text-orange-500 mt-1">
-                  ⚠️ API Rate limit warning: {rateLimitState.remaining} requests remaining
-                </div>
-              )}
-              {rateLimitState.requestTimes.length > 15 && (
+              {rateLimitState.requestTimes.length > 10 && (
                 <div className="text-yellow-500 mt-1">
                   <Clock size={12} className="inline mr-1" />
-                  Local rate limit: {rateLimitState.requestTimes.length}/20 requests in window
+                  Rate limit: {rateLimitState.requestTimes.length}/15 requests in current window
                 </div>
               )}
             </div>
