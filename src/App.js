@@ -8,12 +8,12 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // OpenRouter Configuration with default API key
-  const DEFAULT_API_KEY = "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";
+  // OpenRouter Configuration with your provided API key and model
+  const DEFAULT_API_KEY = "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";
   const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
-  const [selectedModel, setSelectedModel] = useState("anthropic/claude-3-haiku");
+  const [selectedModel, setSelectedModel] = useState("deepseek/deepseek-r1-0528:free");
   const [customInstructions, setCustomInstructions] = useState(
-    "You are a helpful AI assistant working on a Zapier blog project. Provide clear, concise, and actionable advice about automation, workflows, and productivity."
+    "You are a helpful AI assistant. Provide clear, concise, and actionable responses to user queries."
   );
 
   // Enhanced rate limiting with exponential backoff
@@ -130,6 +130,7 @@ function App() {
   }, []);
 
   const availableModels = [
+    { id: "deepseek/deepseek-r1-0528:free", name: "DeepSeek R1 (Free)" },
     { id: "anthropic/claude-3-haiku", name: "Claude 3 Haiku" },
     { id: "anthropic/claude-3-sonnet", name: "Claude 3 Sonnet" },
     { id: "openai/gpt-4", name: "GPT-4" },
@@ -160,7 +161,7 @@ function App() {
     const validation = validateApiKey(DEFAULT_API_KEY);
     if (validation.valid) {
       const welcomeMessage = {
-        text: "✅ Default API key loaded successfully! You can start chatting right away.",
+        text: "✅ DeepSeek R1 model loaded successfully! You can start chatting right away.",
         type: "bot",
         timestamp: new Date(),
       };
@@ -257,7 +258,7 @@ function App() {
         ? { role: "system", content: customInstructions }
         : {
           role: "system",
-          content: "You are a helpful assistant working on a Zapier blog project.",
+          content: "You are a helpful assistant.",
         };
 
       const conversationMessages = [
@@ -278,13 +279,14 @@ function App() {
           headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",
-            "X-Title": "Zapier Blog Chat",
+            "HTTP-Referer": window.location.origin,
+            "X-Title": "DeepSeek R1 Chat",
           },
           body: JSON.stringify({
             model: selectedModel,
             messages: conversationMessages,
             temperature: 0.7,
-            max_tokens: 1500,
+            max_tokens: 2000,
           }),
         }
       );
@@ -546,10 +548,10 @@ function App() {
               <div className="text-center max-w-md">
                 <Bot size={48} className="mx-auto mb-4 text-gray-400" />
                 <h2 className="text-xl lg:text-2xl font-semibold text-gray-800 mb-2">
-                  Enhanced Chat AI Ready
+                  DeepSeek R1 Chat Ready
                 </h2>
                 <p className="text-gray-600 mb-4">
-                  Featuring advanced rate limiting, API key validation, and error handling
+                  Powered by DeepSeek R1 model with advanced reasoning capabilities
                 </p>
               </div>
             </div>
@@ -559,17 +561,17 @@ function App() {
                 <div key={index} className={`mb-6 lg:mb-8 ${message.type === 'user' ? 'ml-auto' : ''}`}>
                   <div className="flex items-start gap-2 lg:gap-3">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${message.type === 'user'
-                        ? 'bg-blue-500 text-white order-2'
-                        : message.type === 'error'
+                      ? 'bg-blue-500 text-white order-2'
+                      : message.type === 'error'
                         ? 'bg-red-500 text-white'
-                        : 'bg-gray-700 text-white'
+                        : 'bg-purple-600 text-white'
                       }`}>
                       {message.type === 'user' ? <User size={16} /> : <Bot size={16} />}
                     </div>
                     <div className={`flex-1 min-w-0 ${message.type === 'user' ? 'order-1' : ''}`}>
                       <div className={`p-3 lg:p-4 rounded-lg ${message.type === 'user'
-                          ? 'bg-blue-500 text-white ml-auto max-w-xs lg:max-w-md'
-                          : message.type === 'error'
+                        ? 'bg-blue-500 text-white ml-auto max-w-xs lg:max-w-md'
+                        : message.type === 'error'
                           ? 'bg-red-50 border border-red-200 text-red-800'
                           : 'bg-white border border-gray-200'
                         }`}>
@@ -590,7 +592,7 @@ function App() {
               {isLoading && (
                 <div className="mb-6 lg:mb-8">
                   <div className="flex items-start gap-2 lg:gap-3">
-                    <div className="w-8 h-8 rounded-full bg-gray-700 text-white flex items-center justify-center flex-shrink-0">
+                    <div className="w-8 h-8 rounded-full bg-purple-600 text-white flex items-center justify-center flex-shrink-0">
                       <Bot size={16} />
                     </div>
                     <div className="flex-1 min-w-0">
@@ -598,9 +600,9 @@ function App() {
                         <div className="flex items-center gap-2">
                           <div className="animate-pulse text-sm lg:text-base">Thinking...</div>
                           <div className="flex gap-1">
-                            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"></div>
+                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                           </div>
                         </div>
                       </div>
@@ -608,7 +610,7 @@ function App() {
                   </div>
                 </div>
               )}
-                <div ref={messagesEndRef} />
+              <div ref={messagesEndRef} />
             </div>
           )}
         </div>
@@ -622,8 +624,8 @@ function App() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={validateApiKey(apiKey).valid ? "Message Enhanced Chat AI..." : "Enter API key in sidebar first..."}
-                  className="w-full p-3 pr-12 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none text-sm lg:text-base"
+                  placeholder={validateApiKey(apiKey).valid ? "Ask DeepSeek R1 anything..." : "Enter API key in sidebar first..."}
+                  className="w-full p-3 pr-12 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none text-sm lg:text-base"
                   rows={1}
                   disabled={isLoading}
                   style={{ minHeight: '48px' }}
@@ -631,7 +633,7 @@ function App() {
                 <button
                   onClick={handleSend}
                   disabled={isLoading || !input.trim() || !validateApiKey(apiKey).valid}
-                  className="absolute right-2 bottom-2 p-2 text-gray-500 hover:text-blue-500 disabled:text-gray-300 disabled:cursor-not-allowed"
+                  className="absolute right-2 bottom-2 p-2 text-gray-500 hover:text-purple-500 disabled:text-gray-300 disabled:cursor-not-allowed"
                 >
                   <Send size={20} />
                 </button>
