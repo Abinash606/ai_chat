@@ -9,7 +9,7 @@ function App() {
   const messagesEndRef = useRef(null);
 
   // OpenRouter Configuration with default API key
-  const DEFAULT_API_KEY = "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";
+  const DEFAULT_API_KEY = "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";
   const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
   const [selectedModel, setSelectedModel] = useState("anthropic/claude-3-haiku");
   const [customInstructions, setCustomInstructions] = useState(
@@ -523,7 +523,7 @@ function App() {
           >
             <Menu size={20} />
           </button>
-          <h1 className="text-xl font-semibold text-gray-800 truncate">Enhanced Chat AI</h1>
+          <h1 className="text-xl font-semibold text-gray-800 truncate">Chat AI</h1>
           <div className="ml-auto flex items-center gap-2">
             {validateApiKey(apiKey).valid ? (
               <div className="flex items-center gap-2 text-green-600">
